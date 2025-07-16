@@ -1,0 +1,81 @@
+#importações
+import os
+import warnings
+import pandas as pd
+from datetime import datetime
+from openpyxl import load_workbook
+from openpyxl.styles import Protection
+from openpyxl.worksheet.datavalidation import DataValidation
+warnings.simplefilter('ignore')
+
+#definições
+MES = 'JULY'
+DATE = "15.07"  #formato DD.MM
+
+ls = r"Z:\caminho\entrada\arquivo.xlsx"
+ls_out = fr"Z:\caminho\saida\{MES}\{DATE}"
+
+pwd = os.getenv('PLANILHA_SENHA', 's3nh4')
+pattern_r = ["AA", "AB", "AC"]
+
+#funções
+def protect(sheet, colunas, bloquear):
+    for col in colunas:
+        for row in range(2, sheet.max_row + 1):
+            sheet[f'{col}{row}'].protection = Protection(locked=bloquear)
+
+def width_column(sheet):
+    for col in sheet.columns:
+        w = max((len(str(cell.value)) for cell in col if cell.value), default=0) + 6
+        sheet.column_dimensions[col[0].column_letter].width = w
+
+def processar_analistas():
+    if not os.path.exists(ls):
+        print(f"[!] Arquivo não encontrado: {ls}")
+        return
+
+    df = pd.read_excel(ls, sheet_name="DISTRIBUIR", usecols=lambda x: True)
+    print(f"[INFO] Total linhas: {len(df)}")
+    os.makedirs(ls_out, exist_ok=True)
+
+    for analista, grupo in df.groupby("analista"):
+        grupo = grupo.copy()
+        grupo.loc[grupo["processo"] == "ANÁLISE A", "centralização"] = pd.Categorical(
+            grupo.loc[grupo["processo"] == "ANÁLISE A", "centralização"], pattern_r, True)
+        grupo = grupo.sort_values(["prioridade", "centralização"])
+
+        pme_adm = (grupo["processo"] == "A1") & grupo["centralização"].isin(["AM", "AT"])
+        if pme_adm.any():
+            final_columns = ['numprop', 'numcont', 'statusprop', 'statuscont',
+                          'vig', 'analista', 'processo', 'centralização', 'prioridade',
+                          'date_column', 'hour_column', 'outdate_column', 'rest', 'dev', 'obs']
+            bloqueadas, desbloqueadas = list("ABCDEFGHIJKL"), list("MNO")
+        else:
+            final_columns = ['numprop', 'vig', 'analista', 'processo', 'centralização',
+                          'prioridade', 'date_column', 'hour_column', 'outdate_column', 'rest', 'dev', 'obs']
+            bloqueadas, desbloqueadas = list("ABCDEFG"), list("JKL")
+
+        grupo = grupo.assign(
+            outdate_column=None, hr_saida=None, rest=None, dev=None, obs=None,
+            date_column=pd.to_datetime(grupo["data entrada"]).dt.date,
+            hour_column=pd.to_datetime(grupo["data entrada"]).dt.time,
+            vig=pd.to_datetime(grupo["vig"]).dt.date
+        )[final_columns]
+
+        file_name = f"{MES}_{DATE}_{analista}.xlsx"
+        caminho = os.path.join(ls_out, file_name)
+        grupo.to_excel(caminho, index=False)
+
+        wb = load_workbook(caminho)
+        sheet = wb.active
+        protect(sheet, bloqueadas, True)
+        protect(sheet, desbloqueadas, False)
+        width_column(sheet)
+        sheet.protection.sheet = True
+        sheet.protection.set_password(pwd)
+        wb.save(caminho)
+
+        print(f"[✓] Gerado: {caminho}")
+
+if __name__ == "__main__":
+    processar_analistas()
